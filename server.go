@@ -56,29 +56,44 @@ type Server struct {
 	Log          *log.Logger
 }
 
-func (s Server) Serve() error {
+func (s *Server) Listen() (io.Closer, string, error) {
+	conn, e := net.ListenUDP("udp", s.BindAddr)
+	if e != nil {
+		return nil, "", e
+	}
+	go s.run(conn)
+	return conn, conn.LocalAddr().String(), nil
+}
+
+func (s *Server) Serve() error {
 	conn, e := net.ListenUDP("udp", s.BindAddr)
 	if e != nil {
 		return e
 	}
+	return s.run(conn)
+}
+
+func (s *Server) run(conn *net.UDPConn) error {
+	buffer := make([]byte, MAX_DATAGRAM_SIZE)
 	for {
-		e = s.processRequest(conn)
+		n, remoteAddr, e := conn.ReadFromUDP(buffer)
 		if e != nil {
 			if s.Log != nil {
-				s.Log.Printf("%v\n", e)
+				s.Log.Println("Failed to read data from client:", e)
+			}
+			return e
+		}
+
+		if e = s.processRequest(buffer[:n], remoteAddr); e != nil {
+			if s.Log != nil {
+				s.Log.Println(e)
 			}
 		}
 	}
 }
 
-func (s Server) processRequest(conn *net.UDPConn) error {
-	var buffer []byte
-	buffer = make([]byte, MAX_DATAGRAM_SIZE)
-	n, remoteAddr, e := conn.ReadFromUDP(buffer)
-	if e != nil {
-		return fmt.Errorf("Failed to read data from client: %v", e)
-	}
-	p, e := ParsePacket(buffer[:n])
+func (s *Server) processRequest(buffer []byte, remoteAddr *net.UDPAddr) error {
+	p, e := ParsePacket(buffer)
 	if e != nil {
 		return nil
 	}
@@ -93,8 +108,7 @@ func (s Server) processRequest(conn *net.UDPConn) error {
 		r := &receiver{remoteAddr, trasnmissionConn, writer, p.Filename, p.Mode, s.Log}
 		go s.ReadHandler(p.Filename, reader)
 		// Writing zero bytes to the pipe just to check for any handler errors early
-		var null_buffer []byte
-		null_buffer = make([]byte, 0)
+		var null_buffer = make([]byte, 0)
 		_, e = writer.Write(null_buffer)
 		if e != nil {
 			errorPacket := ERROR{1, e.Error()}
@@ -117,7 +131,7 @@ func (s Server) processRequest(conn *net.UDPConn) error {
 	return nil
 }
 
-func (s Server) transmissionConn() (*net.UDPConn, error) {
+func (s *Server) transmissionConn() (*net.UDPConn, error) {
 	addr, e := net.ResolveUDPAddr("udp", ":0")
 	if e != nil {
 		return nil, e
